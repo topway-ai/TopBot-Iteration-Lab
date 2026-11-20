@@ -74,6 +74,7 @@ describe("QuickModelFallback", () => {
   let fallback: QuickModelFallback;
   let bus: EventBus;
   let delivered: Array<{ event: RuntimeEvent; routed: string | undefined }>;
+  let completion: Promise<void>;
 
   beforeEach(() => {
     scratch = mkdtempSync(join(tmpdir(), "omb-quick-fallback-"));
@@ -82,7 +83,12 @@ describe("QuickModelFallback", () => {
     fallback = new QuickModelFallback({ file, publish: (event) => bus.publish(event), stopped: () => stopped });
     bus = new EventBus(() => {}, (event) => fallback.take(event));
     delivered = [];
-    bus.subscribe((event) => delivered.push({ event, routed: fallback.routedModel(event.threadId) }));
+    const completed = Promise.withResolvers<void>();
+    completion = completed.promise;
+    bus.subscribe((event) => {
+      delivered.push({ event, routed: fallback.routedModel(event.threadId) });
+      if (event.type === "turn.completed") completed.resolve();
+    });
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -95,7 +101,7 @@ describe("QuickModelFallback", () => {
   const quick = (onFallback = vi.fn()): QuickRoute & { onFallback: ReturnType<typeof vi.fn> } =>
     ({ model: "gpt-5.4-mini", own: { model: "gpt-6-luna", effort: "high", variant: "v" }, onFallback });
   const input: SendTurnInput = { threadId: "t", text: "hey, how are you?", model: "gpt-5.4-mini", system: "You are Elo." };
-  const settled = () => vi.waitFor(() => expect(delivered.some(({ event }) => event.type === "turn.completed")).toBe(true));
+  const settled = () => completion;
 
   it("runs a refused quick turn again on the bot's own model, as one turn with one reply", async () => {
     const { instance, sent } = engine([refusedQuickTurn, answered]);

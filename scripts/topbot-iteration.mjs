@@ -18,6 +18,7 @@ const sha = /^[a-f0-9]{40}$/;
 const topbotVersion = /^(?:0|[1-9]\d{0,7})\.(?:0|[1-9]\d{0,7})\.(?:0|[1-9]\d{0,7})-topbot\.(?:0|[1-9]\d{0,7})$/;
 const workflow = (name) => `${repo}/actions/workflows/${name}.yml/dispatches`;
 const automationFiles = [".github/workflows/topbot-automatic-review.yml", "scripts/topbot-auto-review.mjs"];
+const pullRequestCheckWait = 70 * 60_000;
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 export async function waitForLocalEditorMemory(readResources, { now = Date.now, sleep = wait, timeout = 8 * 60_000 } = {}) {
@@ -131,7 +132,7 @@ export async function iterateTopBot(task, { develop, edit, request, report = () 
   }
   report("testing", { pr: candidate.pr, sha: candidate.head });
   const clock = { now, sleep };
-  await until(() => verifyAutomaticCandidate(read, candidate), 30 * 60_000, clock);
+  await until(() => verifyAutomaticCandidate(read, candidate), pullRequestCheckWait, clock);
   report("full-ci", { sha: candidate.head });
   const ciRun = await dispatchAndWait(request, "ci", candidate.branch, candidate.head, undefined, clock, 60 * 60_000);
   report("qualification", { sha: candidate.head });

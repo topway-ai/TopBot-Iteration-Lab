@@ -32,6 +32,7 @@ describe("cloud computer provisioning cleanup", () => {
       req.on("end", () => {
         requests.push({ method: req.method ?? "GET", path: url.pathname, headers: req.headers, body });
         res.setHeader("content-type", "application/json");
+        res.setHeader("connection", "close");
 
         if (url.pathname === "/api/v1/sandboxes" && req.method === "GET") {
           const boats =
