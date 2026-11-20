@@ -1,0 +1,120 @@
+name: TopBot Windows Update
+run-name: TopBot Windows Update (${{ inputs.publish && 'publish' || 'preview' }}) ${{ github.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the tested build to topway-ai/TopBot-Iteration-Lab
+        type: boolean
+        default: false
+      reviewed_sha:
+        description: Full SHA of the automatically reviewed main commit (required to publish)
+        type: string
+        default: ""
+      reviewed_tag_ruleset:
+        description: Verified no-bypass tag ruleset (ID@updated_at from the ruleset API)
+        type: string
+        default: ""
+      verified_ci_run:
+        description: Exact full CI workflow run ID for the candidate
+        type: string
+        default: ""
+permissions:
+  contents: read
+concurrency:
+  group: topbot-windows-update
+  cancel-in-progress: false
+jobs:
+  build:
+    if: >-
+      github.repository == 'topway-ai/TopBot-Iteration-Lab' &&
+      (github.ref == 'refs/heads/main' || (!inputs.publish &&
+      (startsWith(github.ref, 'refs/heads/topbot-auto/') || startsWith(github.ref, 'refs/heads/topbot-dev/'))))
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+    steps:
+      - name: Verify the exact candidate commit
+        if: inputs.publish || github.ref != 'refs/heads/main'
+        shell: pwsh
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+        run: |
+          if ($env:GITHUB_ACTOR -ne $env:GITHUB_REPOSITORY_OWNER -or
+              $env:GITHUB_TRIGGERING_ACTOR -ne $env:GITHUB_REPOSITORY_OWNER -or
+              $env:REVIEWED_SHA -cnotmatch '^[a-f0-9]{40}$' -or $env:REVIEWED_SHA -cne $env:GITHUB_SHA) {
+            throw 'This build requires the repository owner to dispatch the exact candidate commit.'
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Transaction and failure tests
+        run: node --test --test-concurrency=1 electron/topbot-update.node-test.mjs electron/updater-coordinator.node-test.mjs electron/update-when-quiet.node-test.mjs electron/startup-tray.node-test.mjs
+      - name: Desktop menu, task pause and source size regression
+        run: pnpm exec vitest run electron/managed-desktop-updates.test.mjs electron/updater.test.mjs server/move-freeze.test.ts server/move-freeze-thaw.test.ts scripts/testing/file-size-ratchet.test.ts scripts/patch-appimage-updater.test.mjs --maxWorkers=1 --testTimeout=120000
+      - name: Verify automatic review, publication and desktop authentication
+        run: pnpm exec vitest run scripts/testing/topbot-auto-github.test.ts scripts/testing/topbot-iteration.test.ts scripts/testing/topbot-release-publication.test.ts server/topbot-chat-release.test.ts server/routes/bot-messages.test.ts server/request-auth.test.ts --maxWorkers=1
+      - run: pnpm package:win
+      - name: Packaged server smoke test
+        env:
+          OMB_SMOKE_DIST: ${{ github.workspace }}/release/win-unpacked/resources/server
+        run: node scripts/smoke-packaged-server.mjs
+      - run: node scripts/topbot-update-manifest.mjs
+      - name: Qualify the release archive and hidden-window restart
+        run: node scripts/verify-topbot-update-package.mjs release/win-unpacked release/win-unpacked --release-archive --hidden-candidate
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: artifact
+        with:
+          name: topbot-windows-update-${{ github.run_attempt }}
+          path: |
+            release/TopBot-*-x64.zip
+            release/topbot-windows-update.json
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    # A retry can reuse a successful build without executing its approval step.
+    if: >-
+      inputs.publish && github.repository == 'topway-ai/TopBot-Iteration-Lab' && github.ref == 'refs/heads/main' &&
+      github.actor == github.repository_owner && github.triggering_actor == github.repository_owner &&
+      inputs.reviewed_sha == github.sha && needs.build.outputs.artifact_id != ''
+    needs: build
+    runs-on: ubuntu-latest
+    environment: topbot-windows-release
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          digest-mismatch: error
+          path: release
+      - name: Publish only after the complete artifact is uploaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOPBOT_RELEASE_POLICY_TOKEN: ${{ secrets.TOPBOT_RELEASE_POLICY_TOKEN }}
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+          REVIEWED_TAG_RULESET: ${{ inputs.reviewed_tag_ruleset }}
+          VERIFIED_CI_RUN: ${{ inputs.verified_ci_run }}
+          TOPBOT_AUTOMATIC_MAIN_RULESETS: ${{ vars.TOPBOT_AUTOMATIC_MAIN_RULESETS }}
+        run: node source/scripts/publish-topbot-windows.mjs release

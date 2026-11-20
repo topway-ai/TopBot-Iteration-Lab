@@ -1,0 +1,9 @@
+{
+  "id": "topbot-development",
+  "name": "TopBot development",
+  "version": "1.0.0",
+  "description": "Plan, edit, test and open a draft for a requested TopBot source change without publishing or installing it.",
+  "defaultEnabled": true,
+  "triggerTerms": ["/topbot-development", "topbot development", "topbot \u81ea\u6211\u5f00\u53d1", "topbot\u81ea\u6211\u5f00\u53d1", "\u4fee\u6539 topbot \u6e90\u7801", "\u4fee\u6539topbot\u6e90\u7801"],
+  "requiredCapabilities": []
+}

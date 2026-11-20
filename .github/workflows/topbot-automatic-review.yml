@@ -1,0 +1,30 @@
+name: TopBot Automatic Review
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  review:
+    if: github.repository == 'topway-ai/TopBot-Iteration-Lab' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'topbot-auto/') && !github.event.pull_request.draft
+    name: TopBot automatic review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Run the policy from the base, never from the code being reviewed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check exact snapshot files, mode and release version
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git -c core.hooksPath=/dev/null fetch --no-tags --no-recurse-submodules --depth=2 https://github.com/topway-ai/TopBot-Iteration-Lab.git "$HEAD_SHA"
+          node --input-type=module -e 'import { reviewAutomaticSnapshot } from "./scripts/topbot-auto-review.mjs"; console.log(JSON.stringify(reviewAutomaticSnapshot(process.cwd(), process.env.BASE_SHA, process.env.HEAD_SHA)));'

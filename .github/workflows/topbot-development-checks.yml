@@ -1,0 +1,33 @@
+name: TopBot Development Checks
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+concurrency:
+  group: topbot-development-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    if: github.repository == 'topway-ai/TopBot-Iteration-Lab' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'topbot-dev/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test --test-concurrency=1 scripts/topbot-development.node-test.mjs scripts/topbot-iteration-editor.node-test.mjs scripts/topbot-qualification-artifact.node-test.mjs
+      - run: pnpm typecheck
+      - run: pnpm exec vitest run server/topbot-chat-release.test.ts server/routes/bot-messages.test.ts server/request-auth.test.ts --maxWorkers=1
+      - run: pnpm exec vitest run scripts/testing/topbot-release-publication.test.ts --maxWorkers=1
+      - run: pnpm exec vitest run scripts/testing/topbot-auto-github.test.ts scripts/testing/topbot-iteration.test.ts --maxWorkers=1
+      - run: pnpm exec vitest run scripts/testing/file-size-ratchet.test.ts --maxWorkers=1
