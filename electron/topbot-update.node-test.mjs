@@ -154,8 +154,8 @@ test("Windows independent helper: upgrade, snapshot, rollback and injected failu
     await writeFile(path.join(f.job, "stop.json"), JSON.stringify({ token: f.plan.token }));
     await pause(500);
   });
-  await t.test("healthy upgrade and explicit rollback preserve newer data", async () => {
-    const f = await fixture("happy");
+  await t.test("a briefly locked heartbeat still allows a healthy upgrade and rollback preserves newer data", async () => {
+    const f = await fixture("happy", "busy-health");
     let result = await helper(f, "Prepare"); assert.equal(result.code, 0, result.output);
     result = await helper(f, "Apply", true); assert.equal(result.code, 0, result.output);
     assert.equal((await json(path.join(f.job, "state.json"))).phase, "committed");

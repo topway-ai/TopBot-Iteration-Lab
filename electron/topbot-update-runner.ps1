@@ -29,6 +29,20 @@ function Read-Json($Path) {
   if ([IO.File]::Exists($Path)) { return ([IO.File]::ReadAllText($Path) | ConvertFrom-Json) }
   return $null
 }
+function Read-Health($Path) {
+  try {
+    # The app replaces this file while it is being polled. Permit that rename while reading the old snapshot.
+    $Share = [IO.FileShare]::Read -bor [IO.FileShare]::Delete
+    $Stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $Share)
+    try {
+      $Reader = [IO.StreamReader]::new($Stream, $Utf8)
+      try { return ($Reader.ReadToEnd() | ConvertFrom-Json) } finally { $Reader.Dispose() }
+    } finally { $Stream.Dispose() }
+  } catch [IO.IOException] {
+    # A missing or briefly locked heartbeat does not count as healthy; the normal deadline still applies.
+    return $null
+  }
+}
 function Read-Utc($Value) {
   if ($Value -is [DateTime]) { return $Value.ToUniversalTime() }
   return [DateTimeOffset]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime
@@ -297,7 +311,7 @@ function Apply {
     Start-Sleep -Milliseconds 500
     $Process.Refresh()
     if ($Process.HasExited) { throw 'Updated TopBot exited before its health check completed.' }
-    $Health = Read-Json (Join-Path $Job 'health.json')
+    $Health = Read-Health (Join-Path $Job 'health.json')
     $Age = if ($null -ne $Health) { ([DateTime]::UtcNow - (Read-Utc $Health.at)).TotalSeconds } else { 999 }
     if ($null -ne $Health -and $Health.token -eq $Plan.token -and $Health.pid -eq $Process.Id -and
         $Health.version -eq $Plan.version -and $Health.dataEpoch -eq $Plan.dataEpoch -and $Health.ready -eq $true -and

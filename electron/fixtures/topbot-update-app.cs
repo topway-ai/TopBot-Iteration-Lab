@@ -17,6 +17,9 @@ class UpdateFixture {
     string job = Path.GetDirectoryName(ticketFile);
     string mode = File.ReadAllText(Path.Combine(home, "fixture-mode.txt"));
     if (mode == "crash") return;
+    if (mode == "busy-health") {
+      using (File.Create(Path.Combine(job, "health.json"))) Thread.Sleep(1250);
+    }
     for (int i=0; i<1500; i++) {
       string stop = Path.Combine(job, "stop.json");
       if (mode != "unresponsive" && File.Exists(stop) && (string)Read(stop)["token"] == (string)ticket["token"]) return;
