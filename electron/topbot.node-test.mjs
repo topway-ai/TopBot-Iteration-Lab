@@ -13,7 +13,7 @@ test("TopBot identifies its own fork and never auto-installs upstream releases",
   assert.match(source("./updater.mjs"), /topbot\?\.automaticUpdates === false/);
   const packaging = source("../electron-builder.yml");
   assert.match(packaging, /productName: TopBot/);
-  assert.match(packaging, /owner: topway-ai\s+repo: TopBot/);
+  assert.match(packaging, /owner: topway-ai\s+repo: TopBot-Iteration-Lab/);
   assert.match(packaging, /!enterprise\{,\/\*\*\/\*\}/);
 });
 

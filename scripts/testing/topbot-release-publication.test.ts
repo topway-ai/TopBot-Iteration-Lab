@@ -305,10 +305,10 @@ it("gives this fork one automated release writer, including tag and manual trigg
   }
   const npm = await jobsFor("npm-package.yml");
   for (const [name, job] of Object.entries(npm) as [string, { if?: string }][]) {
-    if (name !== "pack-and-prove") expect(job.if).toMatch(/^github\.repository != 'topway-ai\/TopBot' &&/);
+    if (name !== "pack-and-prove") expect(job.if).toMatch(/^github\.repository != 'topway-ai\/TopBot-Iteration-Lab' &&/);
   }
-  expect((await jobsFor("sync-published-release.yml")).mirror.if).toMatch(/^github\.repository != 'topway-ai\/TopBot' && \(/);
+  expect((await jobsFor("sync-published-release.yml")).mirror.if).toMatch(/^github\.repository != 'topway-ai\/TopBot-Iteration-Lab' && \(/);
   for (const [workflow, job] of [["docker.yml", "publish"], ["connector-release.yml", "publish"], ["promote-stable.yml", "promote"], ["ci.yml", "deploy-composio-broker"]]) {
-    expect((await jobsFor(workflow))[job].if).toMatch(/^github\.repository != 'topway-ai\/TopBot'(?: &&|$)/);
+    expect((await jobsFor(workflow))[job].if).toMatch(/^github\.repository != 'topway-ai\/TopBot-Iteration-Lab'(?: &&|$)/);
   }
 });

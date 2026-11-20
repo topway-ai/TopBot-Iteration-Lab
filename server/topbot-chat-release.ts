@@ -9,7 +9,7 @@ import { TopBotReleaseGateError, verifyWindowsReleaseGate } from "../scripts/top
 import { resolveTagRulesetProof } from "../scripts/topbot-tag-ruleset.mjs";
 
 const owner = "topway-ai";
-const repository = `${owner}/TopBot`;
+const repository = `${owner}/TopBot-Iteration-Lab`;
 const repo = `/repos/${repository}`;
 const release = "topbot-windows-update.yml";
 const project = `https://github.com/${repository}`;
