@@ -15,7 +15,6 @@ import { linuxDisablesGpu, SOFTWARE_RENDERING_ARG } from "./linux-gpu.mjs";
 import { pasteMenuItem } from "./paste-menu-item.mjs";
 import { attachUpdaterWindow, registerUpdaterIpc, sendUpdaterState, reopenedOutOfSight, quietSignals, showManagedUpdates } from "./updater.mjs";
 import { registerManagedDesktopMenu, startDesktopHidden, startManagedDesktopUpdates } from "./managed-desktop-updates.mjs";
-import { startIterationLab } from "./iteration-lab.mjs";
 import {
   appendDesktopCrashRecord,
   buildDiagnosticsReport,
@@ -3071,7 +3070,6 @@ app.whenReady().then(async () => {
     app, powerMonitor, workspaceDirs: [desktopDataDir(), ...(runningDataDir ? [runningDataDir] : [])], local: localServerRequest,
     isServerReady: () => serverReady, window: () => mainWindow, rendererOrigin, log: slog,
   });
-  void startIterationLab({ app, local: localServerRequest, log: slog });
   refreshApplicationMenu();
   openWindowForLink = () => {
     if (!mainWindow || mainWindow.isDestroyed()) createWindow({ deferNavigation: homeWindow.current().kind !== "computer" });

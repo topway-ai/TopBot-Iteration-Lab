@@ -20,6 +20,18 @@ const workflow = (name) => `${repo}/actions/workflows/${name}.yml/dispatches`;
 const automationFiles = [".github/workflows/topbot-automatic-review.yml", "scripts/topbot-auto-review.mjs"];
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+export async function waitForLocalEditorMemory(readResources, { now = Date.now, sleep = wait, timeout = 8 * 60_000 } = {}) {
+  const end = now() + timeout;
+  for (;;) {
+    const { freeRAM, freeDisk, minimumRAM, minimumDisk } = await readResources();
+    requireState(freeDisk >= minimumDisk, "Development paused: staging disk is below the minimum.");
+    if (freeRAM >= minimumRAM) return;
+    const remaining = end - now();
+    requireState(remaining > 0, "Development paused: not enough RAM after the local editor finished.");
+    await sleep(Math.min(remaining, 15_000));
+  }
+}
+
 export const validIterationTask = value => typeof value === "string" && value.trim().length > 0 &&
   value.length <= 4000 && !/[^\P{Cc}\t\n\r]/u.test(value);
 
@@ -237,7 +249,8 @@ async function main() {
     const request = await githubOwner(config.checkout);
     const result = await iterateTopBot(task, { develop: args => runDevelopment(args, { home }),
       edit: job => config.automatic.workerExecutable ? editInSandbox(config.automatic, job)
-        : localEditor ? editWithLocalQwen({ ...job, workspace: job.path })
+        : localEditor ? editWithLocalQwen({ ...job, workspace: job.path }).then(() =>
+            waitForLocalEditorMemory(() => runDevelopment(["doctor"], { home }).then(({ resources }) => resources)))
           : editWithDeepSeek({ ...job, workspace: job.path }, { key: editorKey, model: config.automatic.model ?? "deepseek/deepseek-v4-flash" }),
       request, report: (stage, info = {}) => {
         void appendFile(join(home, "fixture-iteration.jsonl"), JSON.stringify({ stage, ...info }) + "\n").catch(() => {});

@@ -120,15 +120,13 @@ const makeBot = async (
   section: string,
   instanceId = "claude",
 ): Promise<{ id: string; threadId: string }> => {
-  const created = await api("POST", "/api/bots");
-  const id = str(field(created.body, "bot", "id"));
-  const patched = await api("PATCH", `/api/bots/${id}`, {
+  const created = await api("POST", "/api/bots", {
     name,
     section,
     modelSelection: { instanceId, model: "claude-sonnet-5" },
   });
-  expect(patched.status).toBe(200);
-  return { id, threadId: str(field(created.body, "bot", "threadId")) };
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  return { id: str(field(created.body, "bot", "id")), threadId: str(field(created.body, "bot", "threadId")) };
 };
 
 const makeCoordinator = async (

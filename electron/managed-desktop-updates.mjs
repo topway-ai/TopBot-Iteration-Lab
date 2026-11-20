@@ -3,6 +3,7 @@ import { releaseSingleInstanceLock } from "./single-instance.mjs";
 import { updateRoot } from "./topbot-managed-update.mjs";
 import { healthTicketPath, startUpdateHealth } from "./topbot-update-health.mjs";
 import { showManagedUpdates, startUpdater } from "./updater.mjs";
+import { startIterationLab } from "./iteration-lab.mjs";
 
 export function registerManagedDesktopMenu({ ipcMain, localOnly, requireMainWindowSender, window, dialog, shell, t, quit, platform = process.platform }) {
   if (platform !== "win32") return;
@@ -50,4 +51,5 @@ export function startManagedDesktopUpdates(signals, { app, powerMonitor, workspa
       return response.ok && window() === win && !win.isDestroyed() && new URL(win.webContents.getURL()).origin === rendererOrigin();
     },
   }).catch(error => log(`update health: ${error.message}`));
+  if (lab) void startIterationLab({ app, local, log });
 }
