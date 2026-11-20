@@ -2433,8 +2433,6 @@ function relaunchAfterDesktopRemoteChange() {
   timer.unref?.();
 }
 
-registerManagedDesktopMenu({ ipcMain, localOnly, requireMainWindowSender, window: () => mainWindow, dialog, shell, t: nativeT, quit: () => app.quit() });
-
 ipcMain.handle("desktop-remote:state", () => publicDesktopRemoteState());
 ipcMain.handle("desktop-remote:pair", localOnly("desktop-remote:pair", async (event, endpoint, code) => {
   requireMainWindowSender(event);
@@ -2455,6 +2453,8 @@ ipcMain.handle("desktop-remote:disconnect", localOnly("desktop-remote:disconnect
   relaunchAfterDesktopRemoteChange();
   return { active: false };
 }));
+
+registerManagedDesktopMenu({ ipcMain, localOnly, requireMainWindowSender, window: () => mainWindow, dialog, shell, t: nativeT, quit: () => app.quit() });
 
 // Auth and connector credentials never cross this boundary.
 ipcMain.handle("companion-account:state", localOnly("companion-account:state", () => ensureCompanionAccountService().state()));
