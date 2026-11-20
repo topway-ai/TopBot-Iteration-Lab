@@ -12,6 +12,11 @@ import type { CdpTransport } from "./transport.ts";
 export const VIEWPORT = { width: 1280, height: 720 } as const;
 const FIT_ROUNDS = 3;
 
+export function fittedWindowDimension(outer: number, inner: number, viewport: number, screen = Infinity): number {
+  // A renderer can still report a larger emulated viewport immediately after clearing it.
+  return Math.min(screen, Math.max(viewport, outer + viewport - inner));
+}
+
 export interface BrowserOptions {
   /** The binary's calibrated headed identity, applied to every page, frame and worker. Null in a window, which is natively that identity. */
   identity?: Identity | null;
@@ -176,8 +181,8 @@ export class CdpBrowser implements PageHost {
       for (let round = 0; round < FIT_ROUNDS && (size[0] !== viewport.width || size[1] !== viewport.height); round++) {
         const { bounds } = await root.send<{ bounds: { width?: number; height?: number } }>("Browser.getWindowBounds", { windowId });
         if (!bounds.width || !bounds.height) break;
-        const width = Math.min(bounds.width + viewport.width - size[0], screen?.width ?? Infinity);
-        const height = Math.min(bounds.height + viewport.height - size[1], screen?.height ?? Infinity);
+        const width = fittedWindowDimension(bounds.width, size[0], viewport.width, screen?.width);
+        const height = fittedWindowDimension(bounds.height, size[1], viewport.height, screen?.height);
         if (width === bounds.width && height === bounds.height) break;
         await root.send("Browser.setWindowBounds", { windowId, bounds: { width, height } });
         const before = size;

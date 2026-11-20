@@ -153,6 +153,45 @@ describe("owner's tag ruleset proof", () => {
 });
 
 describe("publish the qualified Windows build", () => {
+  const mergedAt = "2026-11-20T06:59:48Z";
+  const openedAt = "2026-11-20T05:24:20Z";
+
+  it.each([null, undefined])("accepts a reviewed fast-forward without a merge commit (%s)", async mergeCommit => {
+    const fastForward = { ...mergedPR, merge_commit_sha: mergeCommit, created_at: openedAt, merged_at: mergedAt };
+    const { run, writes } = github(call =>
+      call === `GET commits/${sha}/pulls` ? json([fastForward]) : call === "GET pulls/7" ? json(fastForward) : undefined);
+    await expect(run()).resolves.toBeUndefined();
+    expect(writes).toContain("PATCH releases/12");
+  });
+
+  it("rejects a fast-forward record whose original base differs from the reviewed parent", async () => {
+    const fastForward = { ...mergedPR, merge_commit_sha: null, created_at: openedAt, merged_at: mergedAt,
+      base: { ...mergedPR.base, sha: tree } };
+    const { run, writes } = github(call =>
+      call === `GET commits/${sha}/pulls` ? json([fastForward]) : call === "GET pulls/7" ? json(fastForward) : undefined);
+    await expect(run()).rejects.toThrow("快进合并");
+    expect(writes).toEqual([]);
+  });
+
+  it.each([true, false])("accepts unlinked historical checks only if completed before the fast-forward (%s)", async beforeMerge => {
+    const fastForward = { ...mergedPR, merge_commit_sha: null, created_at: openedAt, merged_at: mergedAt };
+    const review = { ...prRun("topbot-automatic-review.yml", 97), pull_requests: [], created_at: openedAt,
+      updated_at: beforeMerge ? "2026-11-20T05:40:00Z" : "2026-11-20T07:10:00Z" };
+    const { run, writes } = github(call => {
+      if (call === `GET commits/${sha}/pulls`) return json([fastForward]);
+      if (call === "GET pulls/7") return json(fastForward);
+      if (call === "GET actions/workflows/topbot-automatic-review.yml/runs") return json({ total_count: 1, workflow_runs: [review] });
+      return undefined;
+    });
+    if (beforeMerge) {
+      await expect(run()).resolves.toBeUndefined();
+      expect(writes).toContain("PATCH releases/12");
+    } else {
+      await expect(run()).rejects.toThrow("No unique TopBot automatic review run");
+      expect(writes).toEqual([]);
+    }
+  });
+
   it("reserves a new ref and uploads to the returned draft ID before publishing", async () => {
     const gh = github();
     await gh.run();

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { fittedWindowDimension } from "./browser.ts";
 import type { CdpSession } from "./connection.ts";
 import { safeFileName } from "./downloads.ts";
 import { parseNetError, staleRefError } from "./errors.ts";
@@ -16,6 +17,12 @@ function recordingSession() {
   const session = { send: async (method: string, params: Record<string, unknown> = {}) => { sent.push({ method, params }); return {}; } } as unknown as CdpSession;
   return { session, sent };
 }
+
+it("keeps fitted window bounds valid when the first measurement still reports an emulated viewport", () => {
+  expect(fittedWindowDimension(1600, 2400, 800, 1600)).toBe(800);
+  expect(fittedWindowDimension(800, 657, 800, 1600)).toBe(943);
+  expect(fittedWindowDimension(800, 657, 800, 850)).toBe(850);
+});
 
 describe("keyboard", () => {
   it("reads chords, aliases and the platform's ControlOrMeta", () => {

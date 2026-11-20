@@ -93,10 +93,16 @@ function completeList(response, key, label) {
   return list;
 }
 
-function exactlyLinked(run, { pr, base, head, branch }, workflow) {
+function exactlyLinked(run, { pr, base, head, branch }, workflow, mergedWindow) {
   if (run?.event !== "pull_request" || run.head_sha !== head || run.head_branch !== branch ||
       typeof run.path !== "string" || run.path.split("@", 1)[0] !== `.github/workflows/${workflow}` ||
-      !sameRepo(run.repository) || !sameRepo(run.head_repository) || !Array.isArray(run.pull_requests) || run.pull_requests.length !== 1) return false;
+      !sameRepo(run.repository) || !sameRepo(run.head_repository) || !Array.isArray(run.pull_requests)) return false;
+  // GitHub removes run-to-PR links after a fast-forward closes the PR.
+  if (mergedWindow && run.pull_requests.length === 0) {
+    const started = Date.parse(run.created_at), completed = Date.parse(run.updated_at);
+    return started >= mergedWindow.opened && completed >= started && completed <= mergedWindow.merged;
+  }
+  if (run.pull_requests.length !== 1) return false;
   const [link] = run.pull_requests;
   return link?.number === pr && link.head?.ref === branch && link.head.sha === head && link.head.repo?.id === repositoryId &&
     link.base?.ref === "main" && link.base.sha === base && link.base.repo?.id === repositoryId;
@@ -107,11 +113,11 @@ function requireSuccess(check, label) {
   requireState(check.status === "completed" && check.conclusion === "success", `${label} did not finish successfully.`);
 }
 
-async function verifyWorkflow(read, candidate, workflow, name) {
+async function verifyWorkflow(read, candidate, workflow, name, mergedWindow) {
   const runs = completeList(await read(`${repo}/actions/workflows/${workflow}/runs?event=pull_request&head_sha=${candidate.head}&per_page=100`),
     "workflow_runs", `${name} run`);
   if (runs.length === 0) throw new AutomaticCheckPending(`${name} has not started for this candidate.`);
-  const matches = runs.filter(run => exactlyLinked(run, candidate, workflow));
+  const matches = runs.filter(run => exactlyLinked(run, candidate, workflow, mergedWindow));
   const [run] = matches;
   requireState(matches.length === 1 && isId(run.id) && isId(run.run_attempt), `No unique ${name} run matches the exact PR, workflow path, base and head.`);
   requireSuccess(run, `${name} run`);
@@ -124,7 +130,7 @@ async function verifyWorkflow(read, candidate, workflow, name) {
   return { run: run.id, attempt: run.run_attempt, job: job.id };
 }
 
-export async function verifyAutomaticCandidate(read, candidate) {
+export async function verifyAutomaticCandidate(read, candidate, { mergedWindow } = {}) {
   const input = candidateInput(candidate);
   await Promise.all(trustedFiles.map(async file => {
     const [base, head] = await Promise.all([read(`${repo}/contents/${file}?ref=${input.base}`),
@@ -132,7 +138,7 @@ export async function verifyAutomaticCandidate(read, candidate) {
     requireState(base?.type === "file" && head?.type === "file" && base.path === file && head.path === file &&
       isSha(base.sha) && head.sha === base.sha, "The candidate changed trusted CI, review or release definitions.");
   }));
-  const [ci, review] = await Promise.all(workflows.map(([workflow, name]) => verifyWorkflow(read, input, workflow, name).catch(error => {
+  const [ci, review] = await Promise.all(workflows.map(([workflow, name]) => verifyWorkflow(read, input, workflow, name, mergedWindow).catch(error => {
     if (error instanceof AutomaticCheckPending) return error;
     throw error;
   })));
