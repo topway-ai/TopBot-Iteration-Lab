@@ -116,16 +116,25 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
 
   it("goes back and forward through documents and fragments, and reloads", async () => {
     const first = await open("<p>first</p>");
-    const second = await open(`<p id="n">second</p><script>document.getElementById("n").dataset.loads = String(Number(sessionStorage.loads = (Number(sessionStorage.loads || 0) + 1)))</script>`);
+    const second = await open(`<p id="n">second</p><script>
+      const counter = document.getElementById("n").dataset;
+      counter.loads = sessionStorage.loads = String(Number(sessionStorage.loads || 0) + 1);
+      addEventListener("pageshow", event => {
+        counter.navigation = event.persisted ? "restored" : performance.getEntriesByType("navigation")[0].type;
+      });
+    </script>`);
     await page.navigate(`${second}#part`);
     expect(page.url()).toBe(`${second}#part`);
     expect((await page.back()).url).toBe(second);
     expect((await page.back()).url).toBe(first);
     expect((await page.forward()).url).toBe(second);
-    // Restored from the back-forward cache: the document was kept, its script did not run again.
-    expect(await read(`document.getElementById("n").dataset.loads`)).toBe("1");
+    // Chrome may restore the document or load it again when the history cache misses.
+    await page.waitFor({ target: { selector: '#n[data-navigation="restored"], #n[data-navigation="back_forward"]' }, timeoutMs: 2_000 });
+    const { navigation, loads } = await read<{ navigation: string; loads: string }>(`({ ...document.getElementById("n").dataset })`);
+    expect(loads).toBe(navigation === "restored" ? "1" : "2");
     await page.reload();
-    expect(await read(`document.getElementById("n").dataset.loads`)).toBe("2");
+    await page.waitFor({ target: { selector: '#n[data-navigation="reload"]' }, timeoutMs: 2_000 });
+    expect(await read(`document.getElementById("n").dataset.loads`)).toBe(String(Number(loads) + 1));
     await page.navigate("about:blank");
     await expect(page.forward()).rejects.toThrow(/no later page/);
   });

@@ -269,12 +269,18 @@ describe.each([
     const processId = await start();
     holdStatusAfterFirst = true;
     const controller = new AbortController();
-    const pending = background.backgroundStatus(cfg, BOX, { process_id: processId, wait_seconds: 1 }, controller.signal);
-    await expect.poll(() => calls.filter(entry => entry.method === "GET").length).toBe(2);
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    server.closeAllConnections();
-  });
+    // Keep the request deadline out of this test; the loopback server proves the second read is in flight.
+    const clock = { now: () => 0, sleep: async () => {}, timeout: () => new AbortController().signal };
+    const pending = background.backgroundStatus(cfg, BOX, { process_id: processId, wait_seconds: 1 }, controller.signal, clock)
+      .then(() => null, error => error);
+    try {
+      await expect.poll(() => calls.filter(entry => entry.method === "GET").length, { timeout: 5_000 }).toBe(2);
+    } finally {
+      controller.abort();
+      server.closeAllConnections();
+    }
+    expect(await pending).toMatchObject({ name: "AbortError" });
+  }, 10_000);
 
   it("returns only the end of long output, and never half a character", async () => {
     const processId = await start();
