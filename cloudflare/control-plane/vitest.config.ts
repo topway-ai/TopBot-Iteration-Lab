@@ -43,6 +43,8 @@ export default defineConfig({
     })),
   ],
   test: {
+    // Each test worker starts workerd; keep concurrent runtimes within hosted runner capacity.
+    maxWorkers: 2,
     include: ["test/**/*.test.ts"],
     setupFiles: ["./test/setup.ts"],
   },

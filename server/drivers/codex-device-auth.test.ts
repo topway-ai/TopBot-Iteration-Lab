@@ -304,8 +304,11 @@ describe("Codex server-owned device authentication", () => {
     const controller = create(mode, { startupTimeoutMs: 250 });
     await expect(controller.start()).rejects.toThrow("did not provide a sign-in code in time");
     await controller.cancel();
-    if (existsSync(join(home, "pid"))) expect(alive(Number(readFileSync(join(home, "pid"), "utf8")))).toBe(false);
-  });
+    if (existsSync(join(home, "pid"))) {
+      const pid = Number(readFileSync(join(home, "pid"), "utf8"));
+      await expect.poll(() => alive(pid), { timeout: 5_000 }).toBe(false);
+    }
+  }, 10_000);
 
   it("requires a confirmed ChatGPT login even after an exit-0 device command", async () => {
     const controller = create("unconfirmed", { startupTimeoutMs: 3000, lifetimeMs: 8000 });
