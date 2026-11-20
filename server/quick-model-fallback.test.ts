@@ -83,11 +83,11 @@ describe("QuickModelFallback", () => {
     fallback = new QuickModelFallback({ file, publish: (event) => bus.publish(event), stopped: () => stopped });
     bus = new EventBus(() => {}, (event) => fallback.take(event));
     delivered = [];
-    const completed = Promise.withResolvers<void>();
-    completion = completed.promise;
-    bus.subscribe((event) => {
-      delivered.push({ event, routed: fallback.routedModel(event.threadId) });
-      if (event.type === "turn.completed") completed.resolve();
+    completion = new Promise<void>((resolve) => {
+      bus.subscribe((event) => {
+        delivered.push({ event, routed: fallback.routedModel(event.threadId) });
+        if (event.type === "turn.completed") resolve();
+      });
     });
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
