@@ -11,6 +11,8 @@ import type { CdpTransport } from "./transport.ts";
 /** The page size a headless browser connected without one is fitted to; setViewport changes it. */
 export const VIEWPORT = { width: 1280, height: 720 } as const;
 const FIT_ROUNDS = 3;
+const FIT_POLL_MS = 25;
+const FIT_SETTLE_POLLS = 40;
 
 export function fittedWindowDimension(outer: number, inner: number, viewport: number, screen = Infinity): number {
   // A renderer can still report a larger emulated viewport immediately after clearing it.
@@ -176,18 +178,28 @@ export class CdpBrowser implements PageHost {
     const measure = () => valueInWorld<[number, number]>(page.frames, page.frames.mainFrameId, "[innerWidth, innerHeight]");
     try {
       const { windowId } = await root.send<{ windowId: number }>("Browser.getWindowForTarget", { targetId: page.targetId });
-      let size = await measure();
       const screen = this.#options.screen;
-      for (let round = 0; round < FIT_ROUNDS && (size[0] !== viewport.width || size[1] !== viewport.height); round++) {
+      let size = await measure();
+      for (let round = 0; round < FIT_ROUNDS; round++) {
         const { bounds } = await root.send<{ bounds: { width?: number; height?: number } }>("Browser.getWindowBounds", { windowId });
         if (!bounds.width || !bounds.height) break;
+        const { width: outerWidth, height: outerHeight } = bounds;
+        const rendered = () => size[0] > 0 && size[1] > 0 && size[0] <= outerWidth && size[1] <= outerHeight;
+        // Clearing device metrics can return before Chrome lays out the physical viewport.
+        // Fitting from the still-emulated height would shrink the window instead of restoring it.
+        for (let poll = 0; poll < FIT_SETTLE_POLLS && !rendered(); poll++) {
+          await new Promise((resolve) => setTimeout(resolve, FIT_POLL_MS));
+          size = await measure();
+        }
+        if (!rendered()) return null;
+        if (size[0] === viewport.width && size[1] === viewport.height) break;
         const width = fittedWindowDimension(bounds.width, size[0], viewport.width, screen?.width);
         const height = fittedWindowDimension(bounds.height, size[1], viewport.height, screen?.height);
         if (width === bounds.width && height === bounds.height) break;
         await root.send("Browser.setWindowBounds", { windowId, bounds: { width, height } });
         const before = size;
-        for (let poll = 0; poll < 20 && size[0] === before[0] && size[1] === before[1]; poll++) {
-          await new Promise((resolve) => setTimeout(resolve, 25));
+        for (let poll = 0; poll < FIT_SETTLE_POLLS && size[0] === before[0] && size[1] === before[1]; poll++) {
+          await new Promise((resolve) => setTimeout(resolve, FIT_POLL_MS));
           size = await measure();
         }
         if (size[0] === before[0] && size[1] === before[1]) break;

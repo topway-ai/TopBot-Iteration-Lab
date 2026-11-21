@@ -85,7 +85,7 @@ function fixture(block?: "review" | "full-ci" | "legacy" | "publish") {
     if (dispatchedRun) {
       const id = Number(dispatchedRun[1]);
       const run = dispatchRuns.get(id)!;
-      if (dispatchedRun[2]) return { jobs: [{ name: run.job, head_sha: head, run_id: id, status: "completed", conclusion: "success" }] };
+      if (dispatchedRun[2]) return { jobs: [{ name: run.job, head_sha: head, run_id: id, status: "completed", conclusion: run.fail ? "failure" : "success" }] };
       return { id, run_attempt: 1, event: "workflow_dispatch", head_sha: head, head_branch: run.branch,
         path: `.github/workflows/${run.workflow}.yml`, head_repository: identity, status: "completed", conclusion: run.fail ? "failure" : "success" };
     }
@@ -159,7 +159,7 @@ describe("one chat instruction starts an automatic iteration", () => {
 
   it("does not advance main or dispatch release when full candidate CI fails", async () => {
     const f = fixture("full-ci");
-    await expect(f.run(task)).rejects.toThrow("ci did not complete successfully");
+    await expect(f.run(task)).rejects.toThrow("ci did not complete successfully. GitHub Actions run 20 (CI: failure).");
     expect(f.writes).toEqual([`${repo}/actions/workflows/ci.yml/dispatches`]);
   });
 

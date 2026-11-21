@@ -63,6 +63,8 @@ export class FakeChrome implements CdpTransport {
   hang: (method: string) => boolean = () => false;
   /** Milliseconds before a command answers, to stand for a slow page. */
   delay: (method: string) => number = () => 0;
+  staleMetricsReadsAfterClear = 0;
+  readonly #staleMetrics = new WeakMap<FakePage, { size: [number, number]; remaining: number }>();
   /** What the next navigations fail with, in order, such as net::ERR_ABORTED. */
   readonly navigationErrors: string[];
   readonly #documents: (url: string) => FakeDocument;
@@ -241,7 +243,11 @@ export class FakeChrome implements CdpTransport {
 
   #evaluate(page: FakePage, expression: string): unknown {
     const viewport = page.emulated ?? { width: this.viewport.width, height: this.viewport.height - (page.bar ?? 0) };
-    if (expression === "[innerWidth, innerHeight]") return [viewport.width, viewport.height];
+    if (expression === "[innerWidth, innerHeight]") {
+      const stale = this.#staleMetrics.get(page);
+      if (stale && stale.remaining-- > 0) return stale.size;
+      return [viewport.width, viewport.height];
+    }
     if (expression === "devicePixelRatio") return this.dpr;
     if (expression === "document.readyState") return "complete";
     if (expression === "document.title") return page.title;
@@ -273,9 +279,13 @@ export class FakeChrome implements CdpTransport {
       case "Page.getFrameTree":
         return { frameTree: { frame: { id: page.targetId, url: page.url, loaderId: page.loaderId } } };
       case "Emulation.setDeviceMetricsOverride":
+        this.#staleMetrics.delete(page);
         page.emulated = { width: Number(params.width), height: Number(params.height) };
         return {};
       case "Emulation.clearDeviceMetricsOverride":
+        if (page.emulated && this.staleMetricsReadsAfterClear > 0) {
+          this.#staleMetrics.set(page, { size: [page.emulated.width, page.emulated.height], remaining: this.staleMetricsReadsAfterClear });
+        }
         page.emulated = null;
         return {};
       case "Page.createIsolatedWorld":

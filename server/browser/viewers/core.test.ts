@@ -155,6 +155,19 @@ describe("the page fills the panel", () => {
     expect(viewportFor({ mode: "preset", preset: "fullHd" }, null)).toEqual({ width: 1920, height: 1080 });
   });
 
+  it("restores the standard viewport when Chrome reports a stale tall viewport after clearing emulation", async () => {
+    const { watch, chrome, page } = await setup({ pageLimit: { width: 2560, height: 1457 } });
+    const { viewer } = await watch({ size: { width: 400, height: 750 } });
+    await until(() => page().emulated, same({ width: 1280, height: 2400 }));
+    chrome().staleMetricsReadsAfterClear = 25;
+    const start = chrome().sent.length;
+    await viewer.close();
+    await until(() => chrome().viewport, same(UNATTACHED_VIEWPORT));
+    const resizeHeights = chrome().sent.slice(start).filter(message => message.method === "Browser.setWindowBounds")
+      .map(message => (message.params.bounds as { height: number }).height);
+    expect(resizeHeights).toEqual([943]);
+  });
+
   it("ends a drag on a still of the final size, though Chromium sends no frame for it", async () => {
     const { watch } = await setup();
     const { viewer, outputs } = await watch({ size: { width: 1600, height: 1000 } });

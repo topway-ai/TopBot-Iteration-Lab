@@ -1,12 +1,13 @@
 // Real server, fake Claude CLI that logs each status probe: an engine's CLI is probed once per answer, not once per reader.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { hostTimeout } from "./testing/host-timeout.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -43,10 +44,14 @@ async function boot(home: string, knobs: Record<string, string> = {}) {
   const capture = (chunk: Buffer) => { output += chunk; };
   child.stdout!.on("data", capture);
   child.stderr!.on("data", capture);
-  await expect.poll(async () => {
-    if (child.exitCode !== null) throw new Error(`server exited during boot:\n${output}`);
-    try { return (await fetch(base + "/api/health")).ok; } catch { return false; }
-  }, { timeout: 20_000, interval: 50 }).toBe(true);
+  try {
+    await expect.poll(async () => {
+      if (child.exitCode !== null) throw new Error(`server exited: ${child.exitCode}`);
+      try { return (await fetch(base + "/api/health")).ok; } catch { return false; }
+    }, { timeout: hostTimeout(20_000), interval: 50 }).toBe(true);
+  } catch (error) {
+    throw new Error(`fixture did not become healthy:\n${output}`, { cause: error });
+  }
   const call = async (method: string, path: string, body?: unknown) => {
     const response = await fetch(base + path, {
       method, headers: { origin: base, ...(body === undefined ? {} : { "content-type": "application/json" }) },
@@ -67,13 +72,33 @@ const claudeStatus = (body: { instances: Array<{ instanceId: string; snapshot: R
 it.each(["slow", "empty-once"])("detects a %s CLI across concurrent status reads and continues a saved chat", async (mode) => {
   const home = freshHome();
   const probes = join(home, "probes.log");
+  const release = join(home, "release-version");
+  const emptyOnce = join(home, "empty-version-returned");
+  writeFileSync(release, "");
+  writeFileSync(emptyOnce, "");
   const server = await boot(home, {
     FAKE_CLAUDE_PROBE_LOG: probes,
-    ...(mode === "slow" ? { FAKE_CLAUDE_VERSION_DELAY_MS: "9000" } : { FAKE_CLAUDE_EMPTY_VERSION_ONCE: join(home, "empty-version-returned") }),
+    FAKE_CLAUDE_HOLD_VERSION: release,
+    ...(mode === "empty-once" ? { FAKE_CLAUDE_EMPTY_VERSION_ONCE: emptyOnce } : {}),
   });
-  const lists = await Promise.all([server.call("GET", "/api/instances"), server.call("GET", "/api/instances"), server.call("GET", "/api/instances")]);
+  const engineList = "/api/instances";
+  // Wait for boot probes before measuring a refresh; startup may have probed again before HTTP opened.
+  expect(claudeStatus(await server.call("GET", engineList))).toMatchObject({ state: "available", authenticated: true });
+  const before = probeCount(probes, "version");
+  rmSync(release);
+  rmSync(emptyOnce);
+  const first = server.call("GET", engineList + "?fresh=1");
+  void first.catch(() => {});
+  let reads = [first];
+  try {
+    await expect.poll(() => probeCount(probes, "version"), { timeout: 10_000 }).toBe(before + 1);
+    reads = [first, server.call("GET", engineList), server.call("GET", engineList)];
+  } finally {
+    writeFileSync(release, "");
+  }
+  const lists = await Promise.all(reads);
   for (const list of lists) expect(claudeStatus(list)).toMatchObject({ state: "available", authenticated: true, version: expect.stringContaining("Claude Code") });
-  expect(probeCount(probes, "version")).toBe(mode === "slow" ? 1 : 2);
+  expect(probeCount(probes, "version") - before).toBe(mode === "slow" ? 1 : 2);
   const { bot } = await server.control("new-bot", "--name", "Detection fixture");
   const read = async () => (await server.call("GET", "/api/bots?messages=0")).bots.find((item: { id: string }) => item.id === bot.id);
   const selection = (await read()).modelSelection;
@@ -89,7 +114,7 @@ it.each(["slow", "empty-once"])("detects a %s CLI across concurrent status reads
   const transcript = await server.control("messages", "--bot", bot.id);
   expect(replies(transcript.messages)).toHaveLength(replies(initial.messages).length + 2);
   expect((await read()).modelSelection).toEqual(selection);
-}, 90_000);
+}, hostTimeout(90_000));
 
 it("probes the engine's CLI once on a later start while the model lists arrive and the engine list is read", async () => {
   const home = freshHome();

@@ -31,7 +31,7 @@ async function runIteration(task: string, editorKey?: string): Promise<Result> {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => inherited.test(name)));
   return new Promise(resolve => {
     const child = execFile(automatic.nodeExecutable, ["--max-old-space-size=384", script], { cwd: home, env, windowsHide: true,
-      maxBuffer: 1_048_576, timeout: 250 * 60_000 }, (_error, stdout) => {
+      maxBuffer: 1_048_576, timeout: 285 * 60_000 }, (_error, stdout) => {
       try { resolve(produced.parse(JSON.parse(stdout.trim()))); }
       catch { resolve({ ok: false, message: "自动迭代进程异常终止。请核对开发工作区和 GitHub 状态；不会自动重试发布。" }); }
     });

@@ -67,9 +67,16 @@ async function dispatchAndWait(request, name, branch, commit, inputs, clock, dur
       run.head_repository?.full_name === repository && run.path?.split("@", 1)[0] === `.github/workflows/${name}.yml` &&
       run.run_attempt === 1, "Dispatched workflow does not match the expected commit.");
     if (run.status !== "completed") throw new AutomaticCheckPending();
-    requireState(run.conclusion === "success", `${name} did not complete successfully.`);
     const stageJob = name === "ci" ? "CI" : inputs?.publish === "true" ? "publish" : "build";
-    const result = await request(`${repo}/actions/runs/${id}/attempts/1/jobs?per_page=100`);
+    const attemptJobs = `${repo}/actions/runs/${id}/attempts/1/jobs?per_page=100`;
+    if (run.conclusion !== "success") {
+      const { jobs } = await request(attemptJobs).catch(() => ({}));
+      const failed = Array.isArray(jobs) ? jobs.filter(job => job.run_id === id && job.head_sha === commit &&
+        job.status === "completed" && ["failure", "timed_out", "cancelled", "action_required"].includes(job.conclusion) &&
+        typeof job.name === "string").slice(0, 6).map(job => `${job.name.replace(/[^\x20-\x7E]/g, " ").slice(0, 80)}: ${job.conclusion}`) : [];
+      throw new Error(`${name} did not complete successfully. GitHub Actions run ${id}${failed.length ? ` (${failed.join("; ")})` : ""}.`);
+    }
+    const result = await request(attemptJobs);
     requireState(Array.isArray(result?.jobs) && result.jobs.some(job => job.name === stageJob && job.head_sha === commit &&
       job.run_id === id && job.status === "completed" && job.conclusion === "success"), "The exact workflow job did not succeed.");
     return id;
@@ -134,7 +141,7 @@ export async function iterateTopBot(task, { develop, edit, request, report = () 
   const clock = { now, sleep };
   await until(() => verifyAutomaticCandidate(read, candidate), pullRequestCheckWait, clock);
   report("full-ci", { sha: candidate.head });
-  const ciRun = await dispatchAndWait(request, "ci", candidate.branch, candidate.head, undefined, clock, 60 * 60_000);
+  const ciRun = await dispatchAndWait(request, "ci", candidate.branch, candidate.head, undefined, clock, 75 * 60_000);
   report("qualification", { sha: candidate.head });
   const buildRun = await dispatchAndWait(request, "topbot-windows-update", candidate.branch, candidate.head,
     { publish: "false", reviewed_sha: candidate.head }, clock, 65 * 60_000);
