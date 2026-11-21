@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { iterateTopBot, IterationGitHubError } from "../topbot-iteration.mjs";
+import { TopBotReleaseGateError } from "../topbot-release-gate.mjs";
 import { createTopBotIteration, topBotIterationTask } from "../../server/topbot-iteration.ts";
 
 const owner = "topway-ai/TopBot-Iteration-Lab", repo = `/repos/${owner}`;
@@ -159,7 +160,11 @@ describe("one chat instruction starts an automatic iteration", () => {
 
   it("does not advance main or dispatch release when full candidate CI fails", async () => {
     const f = fixture("full-ci");
-    await expect(f.run(task)).rejects.toThrow("ci did not complete successfully. GitHub Actions run 20 (CI: failure).");
+    await expect(f.run(task)).rejects.toMatchObject({
+      constructor: TopBotReleaseGateError,
+      message: "ci did not complete successfully. GitHub Actions run 20 (CI: failure).",
+      retryable: false,
+    });
     expect(f.writes).toEqual([`${repo}/actions/workflows/ci.yml/dispatches`]);
   });
 

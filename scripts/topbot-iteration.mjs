@@ -74,7 +74,7 @@ async function dispatchAndWait(request, name, branch, commit, inputs, clock, dur
       const failed = Array.isArray(jobs) ? jobs.filter(job => job.run_id === id && job.head_sha === commit &&
         job.status === "completed" && ["failure", "timed_out", "cancelled", "action_required"].includes(job.conclusion) &&
         typeof job.name === "string").slice(0, 6).map(job => `${job.name.replace(/[^\x20-\x7E]/g, " ").slice(0, 80)}: ${job.conclusion}`) : [];
-      throw new Error(`${name} did not complete successfully. GitHub Actions run ${id}${failed.length ? ` (${failed.join("; ")})` : ""}.`);
+      throw new TopBotReleaseGateError(`${name} did not complete successfully. GitHub Actions run ${id}${failed.length ? ` (${failed.join("; ")})` : ""}.`.slice(0, 300));
     }
     const result = await request(attemptJobs);
     requireState(Array.isArray(result?.jobs) && result.jobs.some(job => job.name === stageJob && job.head_sha === commit &&
