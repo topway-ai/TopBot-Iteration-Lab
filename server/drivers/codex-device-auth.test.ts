@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { removeTempDir } from "../testing/cleanup.ts";
+import { hostTimeout } from "../testing/host-timeout.ts";
 import { CodexDeviceAuthController, codexDevicePrompt } from "./codex-device-auth.ts";
 
 // Every subprocess is this script in a disposable HOME: no real Codex, network or credentials.
@@ -126,7 +127,7 @@ describe("Codex server-owned device authentication", () => {
     expect(start.userCode).toBe("TEST-12345");
     expect(existsSync(join(home, ".omb-fake-codex-authenticated"))).toBe(false);
     writeFileSync(join(home, ".omb-fake-codex-login-approved"), "approve fixture only\n");
-    await expect.poll(async () => (await controller.get(start.flowId!)).phase).toBe("succeeded");
+    await expect.poll(async () => (await controller.get(start.flowId!)).phase, { timeout: hostTimeout(5_000) }).toBe("succeeded");
     expect(readFileSync(join(home, ".omb-fake-codex-authenticated"), "utf8")).toContain("not a credential");
   });
 

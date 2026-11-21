@@ -163,9 +163,8 @@ describe("a cloud computer goes to sleep after its idle window", () => {
     const background = await import("./cloud-computer-background.ts");
     await background.startInBackground(cfg, boxId, "python3 job.py", new AbortController().signal);
     power.used(botId);
-    await new Promise(resolve => setTimeout(resolve, 3_500));
+    await waitFor(() => requests.filter(request => request.path === `${root}/${boxId}/commands/7`).length >= 2, hostTimeout(10_000));
     expect(stops()).toEqual([]);
-    expect(requests.filter(request => request.path === `${root}/${boxId}/commands/7`).length).toBeGreaterThanOrEqual(2);
     expect(power.awake()).toBe(true);
     jobRunning = false;
     await asleep();
