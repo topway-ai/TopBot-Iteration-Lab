@@ -29,9 +29,9 @@ function Read-Json($Path) {
   if ([IO.File]::Exists($Path)) { return ([IO.File]::ReadAllText($Path) | ConvertFrom-Json) }
   return $null
 }
-function Read-Health($Path) {
+function Read-SharedJson($Path) {
   try {
-    # The app replaces this file while it is being polled. Permit that rename while reading the old snapshot.
+    # The app publishes receipts atomically. Allow a rename while reading the previous snapshot.
     $Share = [IO.FileShare]::Read -bor [IO.FileShare]::Delete
     $Stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $Share)
     try {
@@ -39,7 +39,7 @@ function Read-Health($Path) {
       try { return ($Reader.ReadToEnd() | ConvertFrom-Json) } finally { $Reader.Dispose() }
     } finally { $Stream.Dispose() }
   } catch [IO.IOException] {
-    # A missing or briefly locked heartbeat does not count as healthy; the normal deadline still applies.
+    # A missing or briefly locked receipt does not satisfy the check.
     return $null
   }
 }
@@ -282,7 +282,7 @@ function Handoff {
   Write-Json (Join-Path $Job 'helper-ready.json') @{ token=$Plan.token; pid=$PID }
   $End = [DateTime]::UtcNow.AddSeconds(20)
   while ($true) {
-    $Go = Read-Json (Join-Path $Job 'go.json')
+    $Go = Read-SharedJson (Join-Path $Job 'go.json')
     if ($null -ne $Go -and $Go.token -eq $Plan.token -and $Go.pid -eq $PID) { break }
     if ([DateTime]::UtcNow -gt $End) { throw 'Update handoff was not confirmed; retaining the old installation.' }
     Start-Sleep -Milliseconds 200
@@ -311,7 +311,7 @@ function Apply {
     Start-Sleep -Milliseconds 500
     $Process.Refresh()
     if ($Process.HasExited) { throw 'Updated TopBot exited before its health check completed.' }
-    $Health = Read-Health (Join-Path $Job 'health.json')
+    $Health = Read-SharedJson (Join-Path $Job 'health.json')
     $Age = if ($null -ne $Health) { ([DateTime]::UtcNow - (Read-Utc $Health.at)).TotalSeconds } else { 999 }
     if ($null -ne $Health -and $Health.token -eq $Plan.token -and $Health.pid -eq $Process.Id -and
         $Health.version -eq $Plan.version -and $Health.dataEpoch -eq $Plan.dataEpoch -and $Health.ready -eq $true -and

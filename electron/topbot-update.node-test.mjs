@@ -3,13 +3,13 @@ import test from "node:test";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, writeFile, readFile, copyFile, rm, stat, rename, symlink, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, copyFile, readdir, rm, stat, rename, symlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { checkManifest, findRelease, resourcePreflight, trustedFetch } from "./topbot-release.mjs";
 import { healthTicketPath, startUpdateHealth } from "./topbot-update-health.mjs";
-import { createManagedUpdater } from "./topbot-managed-update.mjs";
+import { createManagedUpdater, writeUpdateHandoff } from "./topbot-managed-update.mjs";
 
 const run = promisify(execFile);
 const windows = process.platform === "win32";
@@ -78,6 +78,29 @@ test("release selection rejects drafts and never uses a foreign manifest", async
   await assert.rejects(findRelease({ current: "0.1.161-topbot.4", fetchImpl }), /Unexpected/);
 });
 
+test("handoff retries transient receipt locks while exposing only complete JSON", async t => {
+  const job = await mkdtemp(path.join(temp, "topbot-handoff-"));
+  t.after(() => rm(job, { recursive: true, force: true }));
+  const file = path.join(job, "go.json"), record = { token: "a".repeat(64), pid: 42 };
+  let attempts = 0;
+  const waits = [];
+  await writeUpdateHandoff(job, record, { replace: async (from, to) => {
+    assert.equal(to, file);
+    assert.deepEqual(await json(from), record);
+    await assert.rejects(stat(to), { code: "ENOENT" });
+    if (++attempts <= 2) throw Object.assign(new Error("locked"), { code: "EBUSY" });
+    await rename(from, to);
+  }, wait: async ms => { waits.push(ms); } });
+  assert.deepEqual(waits, [50, 100]);
+  assert.deepEqual(await json(file), record);
+  await assert.rejects(writeUpdateHandoff(job, { ...record, pid: 43 }, {
+    replace: async () => { throw Object.assign(new Error("full disk"), { code: "ENOSPC" }); },
+    wait: async () => assert.fail("Permanent errors must not be retried."),
+  }), { code: "ENOSPC" });
+  assert.deepEqual(await readdir(job), ["go.json"]);
+  assert.deepEqual(await json(file), record);
+});
+
 test("health receipts require an owned ticket and matching executable", async t => {
   const root = await mkdtemp(path.join(temp, "topbot-health-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -130,7 +153,7 @@ test("Windows independent helper: upgrade, snapshot, rollback and injected failu
     if (handoff) {
       for (let i = 0; i < 100; i++) {
         const receipt = await json(path.join(f.job, "helper-ready.json")).catch(() => null);
-        if (receipt?.pid === child.pid) { await writeFile(path.join(f.job, "go.json"), JSON.stringify({ token: f.plan.token, pid: child.pid })); break; }
+        if (receipt?.pid === child.pid) { await writeUpdateHandoff(f.job, { token: f.plan.token, pid: child.pid }); break; }
         if (child.exitCode !== null) break;
         await pause(100);
       }

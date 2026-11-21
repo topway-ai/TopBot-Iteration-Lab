@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, copyFile, writeFile, rm, readdir, realpath, lstat } from "node:fs/promises";
+import { mkdir, copyFile, writeFile, rename, rm, readdir, realpath, lstat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,26 @@ export const updateRoot = () => process.env.TOPBOT_UPDATE_ROOT || path.join(os.h
 const runner = fileURLToPath(new URL("./topbot-update-runner.ps1", import.meta.url));
 const launcher = fileURLToPath(new URL("./topbot-update-launch.ps1", import.meta.url));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const busyHandoff = error => ["EBUSY", "EACCES", "EPERM"].includes(error?.code);
+
+export async function writeUpdateHandoff(job, { token, pid }, { replace = rename, wait = sleep } = {}) {
+  const file = path.join(job, "go.json");
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  const delays = [50, 100, 200, 400, 800];
+  try {
+    await writeFile(temporary, JSON.stringify({ token, pid }), { flag: "wx", mode: 0o600 });
+    for (let attempt = 0; ; attempt++) {
+      try { await replace(temporary, file); return; }
+      catch (error) {
+        if (!busyHandoff(error) || attempt >= delays.length) throw error;
+        await wait(delays[attempt]);
+      }
+    }
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
 export function updatePowerShell(root) {
   const config = path.join(root, "runtime.json");
   if (existsSync(config)) {
@@ -136,12 +156,15 @@ export function createManagedUpdater({ version, installDir, dataDirs, profileDir
       let ready = false;
       while (Date.now() < deadline) {
         if (child.exitCode != null) throw new Error(`Update helper exited before handoff (${child.exitCode}); TopBot will remain open.`);
-        const receipt = await readUpdateJson(path.join(job, "helper-ready.json"));
+        const receipt = await readUpdateJson(path.join(job, "helper-ready.json")).catch(error => {
+          if (busyHandoff(error)) return null;
+          throw error;
+        });
         if (receipt?.token === plan.token && receipt.pid === child.pid) { ready = true; break; }
         await sleep(250);
       }
       if (!ready) throw new Error("Update helper did not become ready; TopBot will remain open.");
-      await writeFile(path.join(job, "go.json"), JSON.stringify({ token: plan.token, pid: child.pid }));
+      await writeUpdateHandoff(job, { token: plan.token, pid: child.pid });
       setState({ status: "installing", message: "Saving a data snapshot, updating and checking startup. The previous program is kept for rollback." });
       quit();
     } catch (error) {

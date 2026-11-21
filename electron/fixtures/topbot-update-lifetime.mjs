@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { runUpdateHelper } from "../topbot-managed-update.mjs";
+import { runUpdateHelper, writeUpdateHandoff } from "../topbot-managed-update.mjs";
 
 const job = path.resolve(process.argv[2]);
 const plan = JSON.parse(await readFile(path.join(job, "plan.json"), "utf8"));
@@ -11,7 +11,7 @@ let handedOff = false;
 for (let i = 0; i < 100; i++) {
   const ready = await readFile(path.join(job, "helper-ready.json"), "utf8").then(JSON.parse).catch(() => null);
   if (ready?.pid === child.pid && ready.token === plan.token) {
-    await writeFile(path.join(job, "go.json"), JSON.stringify({ token: plan.token, pid: child.pid }));
+    await writeUpdateHandoff(job, { token: plan.token, pid: child.pid });
     handedOff = true;
     break;
   }
