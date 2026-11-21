@@ -256,7 +256,10 @@ describe("peer comms from a room turn", () => {
     const asker = await makeBot("Room Asker", "Room comms");
     const helper = await makeBot("Room Helper", "Room comms");
     const room = await makeRoom("Ask room", [asker.id, helper.id], "Room comms");
-    const helperConversation = await messagesOf(helper.threadId);
+    // Setup choices can complete in the background without changing the private transcript.
+    const privateTranscript = async () => (await messagesOf(helper.threadId))
+      .map(({ id, role, kind, text, from, tool, comm }) => ({ id, role, kind, text, from, tool, comm }));
+    const helperConversation = await privateTranscript();
 
     const asked = await internal("POST", "/api/internal/coordinate-bots", {
       fromBotId: asker.id,
@@ -280,7 +283,7 @@ describe("peer comms from a room turn", () => {
     const inRoom = await messagesOf(room.threadId);
     const chip = inRoom.find((m) => m.kind === "activity" && m.tool?.name === "Sent to Room Helper");
     expect(chip?.comm).toMatchObject({ groupId: room.id, withName: "Room Helper" });
-    expect(await messagesOf(helper.threadId)).toEqual(helperConversation);
+    expect(await privateTranscript()).toEqual(helperConversation);
     const groups = field((await api("GET", "/api/bots?messages=0")).body, "groups");
     const pairChannel = (Array.isArray(groups) ? groups : []).find(
       (group: unknown) =>
