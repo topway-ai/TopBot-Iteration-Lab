@@ -200,6 +200,25 @@ describe("publish the qualified Windows build", () => {
     expect(gh.calls.slice(index - 3, index)).toEqual(["GET actions/runs/98/attempts/1/jobs", `GET git/ref/tags/${tag}`, "GET releases/12"]);
     expect(gh.calls.filter(call => call === "GET immutable-releases")).toHaveLength(2);
   });
+  it.each([2, 3])("accepts only a bounded complete exact-SHA CI rerun (attempt %s)", async attempt => {
+    const gh = github(call => {
+      if (call === "GET actions/workflows/ci.yml/runs") return undefined;
+      if (call === "GET actions/runs/98") return json({ ...ci, run_attempt: attempt });
+      if (call === "GET actions/runs/98/attempts/2/jobs") {
+        return json({ jobs: [{ name: "CI", head_sha: sha, run_id: 98, status: "completed", conclusion: "success" }] });
+      }
+      return undefined;
+    });
+    const env = { ...ownerRun, VERIFIED_CI_RUN: "98" };
+    if (attempt === 2) {
+      await expect(gh.run(env)).resolves.toBeUndefined();
+      expect(gh.writes).toContain("PATCH releases/12");
+      expect(gh.calls).not.toContain("GET actions/runs/98/attempts/1/jobs");
+    } else {
+      await expect(gh.run(env)).rejects.toThrow();
+      expect(gh.writes).toEqual([]);
+    }
+  });
   it.each([
     ["unprotected main", "GET branches/main", { protected: false, commit: { sha } }],
     ["a required human approval", "GET rules/branches/main", [...autoPolicy, { type: "pull_request" }]],

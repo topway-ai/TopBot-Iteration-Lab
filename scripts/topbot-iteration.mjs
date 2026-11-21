@@ -5,7 +5,7 @@ import { constants, homedir, setPriority } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gitAt, runDevelopment } from "./topbot-development.mjs";
-import { advanceAutomaticMain, AutomaticCheckPending, requireAutomaticMain, verifyAutomaticCandidate } from "./topbot-auto-github.mjs";
+import { advanceAutomaticMain, AutomaticCheckPending, AutomaticCiFailed, maxCiAttempts, requireAutomaticMain, retryableCiFailure, verifyAutomaticCandidate } from "./topbot-auto-github.mjs";
 import { verifyWindowsReleaseGate, TopBotReleaseGateError } from "./topbot-release-gate.mjs";
 import { resolveTagRulesetProof } from "./topbot-tag-ruleset.mjs";
 import { editWithDeepSeek, editWithLocalQwen } from "./topbot-iteration-editor.mjs";
@@ -18,7 +18,7 @@ const sha = /^[a-f0-9]{40}$/;
 const topbotVersion = /^(?:0|[1-9]\d{0,7})\.(?:0|[1-9]\d{0,7})\.(?:0|[1-9]\d{0,7})-topbot\.(?:0|[1-9]\d{0,7})$/;
 const workflow = (name) => `${repo}/actions/workflows/${name}.yml/dispatches`;
 const automationFiles = [".github/workflows/topbot-automatic-review.yml", "scripts/topbot-auto-review.mjs"];
-const pullRequestCheckWait = 70 * 60_000;
+const pullRequestCheckWait = 100 * 60_000;
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 export async function waitForLocalEditorMemory(readResources, { now = Date.now, sleep = wait, timeout = 8 * 60_000 } = {}) {
@@ -52,23 +52,51 @@ async function until(check, duration, { now, sleep }) {
     if (now() >= end) break;
     await sleep(Math.min(end - now(), 15_000));
   } while (now() <= end);
-  throw new Error("Timed out waiting for CI or publication. No write will be retried automatically.");
+  throw new Error("Timed out waiting for CI or publication. No further writes will be attempted.");
 }
 
-async function dispatchAndWait(request, name, branch, commit, inputs, clock, duration) {
+async function waitForCandidate(request, candidate, clock, report) {
+  const read = path => request(path);
+  let retried = null;
+  return until(async () => {
+    try { return await verifyAutomaticCandidate(read, candidate); }
+    catch (error) {
+      if (!(error instanceof AutomaticCiFailed) || error.attempt !== 1 ||
+          (retried !== null && retried !== error.runId)) throw error;
+      if (retried === null) {
+        await request(`${repo}/actions/runs/${error.runId}/rerun-failed-jobs`, "POST");
+        retried = error.runId;
+        report("ci-retry", { kind: "pull-request", run: retried, sha: candidate.head });
+      }
+      // GitHub may briefly serve the prior conclusion after accepting the rerun.
+      throw new AutomaticCheckPending();
+    }
+  }, pullRequestCheckWait, clock);
+}
+
+async function dispatchAndWait(request, name, branch, commit, inputs, clock, duration, report) {
   const started = await request(workflow(name), "POST", { ref: branch, ...(inputs ? { inputs } : {}) });
   const id = started?.workflow_run_id;
   requireState(Number.isSafeInteger(id) && id > 0, "GitHub did not return a workflow run ID; not retrying dispatch.");
+  let retried = false;
   return until(async () => {
     let run;
     try { run = await request(`${repo}/actions/runs/${id}`); }
     catch (error) { if (error instanceof IterationGitHubError && error.status === 404) throw new AutomaticCheckPending(); throw error; }
     requireState(run?.id === id && run.event === "workflow_dispatch" && run.head_sha === commit && run.head_branch === branch &&
       run.head_repository?.full_name === repository && run.path?.split("@", 1)[0] === `.github/workflows/${name}.yml` &&
-      run.run_attempt === 1, "Dispatched workflow does not match the expected commit.");
+      (run.run_attempt === 1 || (name === "ci" && retried && run.run_attempt === maxCiAttempts)), "Dispatched workflow does not match the expected commit.");
     if (run.status !== "completed") throw new AutomaticCheckPending();
     const stageJob = name === "ci" ? "CI" : inputs?.publish === "true" ? "publish" : "build";
-    const attemptJobs = `${repo}/actions/runs/${id}/attempts/1/jobs?per_page=100`;
+    if (name === "ci" && run.run_attempt === 1 && retryableCiFailure(run)) {
+      if (!retried) {
+        await request(`${repo}/actions/runs/${id}/rerun-failed-jobs`, "POST");
+        retried = true;
+        report("ci-retry", { kind: "full", run: id, sha: commit });
+      }
+      throw new AutomaticCheckPending();
+    }
+    const attemptJobs = `${repo}/actions/runs/${id}/attempts/${run.run_attempt}/jobs?per_page=100`;
     if (run.conclusion !== "success") {
       const { jobs } = await request(attemptJobs).catch(() => ({}));
       const failed = Array.isArray(jobs) ? jobs.filter(job => job.run_id === id && job.head_sha === commit &&
@@ -139,9 +167,9 @@ export async function iterateTopBot(task, { develop, edit, request, report = () 
   }
   report("testing", { pr: candidate.pr, sha: candidate.head });
   const clock = { now, sleep };
-  await until(() => verifyAutomaticCandidate(read, candidate), pullRequestCheckWait, clock);
+  await waitForCandidate(request, candidate, clock, report);
   report("full-ci", { sha: candidate.head });
-  const ciRun = await dispatchAndWait(request, "ci", candidate.branch, candidate.head, undefined, clock, 75 * 60_000);
+  const ciRun = await dispatchAndWait(request, "ci", candidate.branch, candidate.head, undefined, clock, 105 * 60_000, report);
   report("qualification", { sha: candidate.head });
   const buildRun = await dispatchAndWait(request, "topbot-windows-update", candidate.branch, candidate.head,
     { publish: "false", reviewed_sha: candidate.head }, clock, 65 * 60_000);
@@ -222,7 +250,12 @@ export async function githubOwner(checkout) {
       headers: { ...headers, "content-type": upload ? body.type : "application/json" },
       ...(body === undefined ? {} : { body: upload ? body : JSON.stringify(body) }) });
     if (!r.ok) { await r.body?.cancel(); throw new IterationGitHubError(r.status); }
-    return r.status === 204 ? undefined : r.json();
+    if (r.status === 204 || (r.status === 201 && method === "POST" &&
+        /^\/actions\/runs\/\d+\/rerun-failed-jobs$/.test(path.slice(repo.length)))) {
+      await r.body?.cancel();
+      return undefined;
+    }
+    return r.json();
   };
   call.download = async path => {
     requireState(path.startsWith(repo + "/actions/artifacts/") && /\/artifacts\/\d+\/zip$/.test(path), "Unexpected artifact route.");
@@ -276,7 +309,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try { await main(); }
   catch (error) {
     await appendFile(join(homedir(), ".topbot-development", "fixture-iteration.jsonl"), JSON.stringify({ stage: "failure", error: error.message }) + "\n").catch(() => {});
-    console.log(JSON.stringify({ ok: false, message: error instanceof IterationGitHubError || error instanceof TopBotReleaseGateError
+    console.log(JSON.stringify({ ok: false, message: error instanceof IterationGitHubError || error instanceof TopBotReleaseGateError || error instanceof AutomaticCiFailed
       ? error.message : "Automatic iteration stopped before further writes. Check its worktree and GitHub Actions." }));
     process.exitCode = 1;
   }

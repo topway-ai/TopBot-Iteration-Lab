@@ -14,9 +14,10 @@ const ruleEntries = [{ type: "deletion" }, { type: "non_fast_forward" },
 const ref = { ref: `refs/tags/${tag}`, object: { sha: head, type: "commit" } };
 const task = "Change the test card heading";
 
-function fixture(block?: "review" | "full-ci" | "legacy" | "publish") {
+function fixture(block?: "review" | "full-ci" | "full-ci-flake" | "pr-ci-flake" | "review-and-ci" | "legacy" | "publish") {
   const events: string[] = [], writes: string[] = [];
   let current = base, dispatched = false;
+  const retried = new Set<number>();
   const dispatchRuns = new Map<number, { branch: string; workflow: string; job: string; fail: boolean }>();
   const develop = vi.fn(async ([cmd]: string[]) => {
     events.push(cmd);
@@ -33,6 +34,13 @@ function fixture(block?: "review" | "full-ci" | "legacy" | "publish") {
   const request = vi.fn(async (path: string, method = "GET", body?: unknown): Promise<unknown> => {
     if (method === "POST") {
       writes.push(path);
+      const rerun = /\/actions\/runs\/(1|20)\/rerun-failed-jobs$/.exec(path);
+      if (rerun) {
+        const id = Number(rerun[1]);
+        expect(retried.has(id)).toBe(false);
+        retried.add(id);
+        return undefined;
+      }
       if (path === "/graphql") {
         expect(body).toMatchObject({ variables: { input: { repositoryId: identity.node_id, refUpdates: [
           { name: `refs/heads/${branch}`, beforeOid: head, afterOid: head, force: false },
@@ -43,7 +51,7 @@ function fixture(block?: "review" | "full-ci" | "legacy" | "publish") {
       }
       if (path.endsWith("/ci.yml/dispatches")) {
         expect(body).toEqual({ ref: branch });
-        dispatchRuns.set(20, { branch, workflow: "ci", job: "CI", fail: block === "full-ci" });
+        dispatchRuns.set(20, { branch, workflow: "ci", job: "CI", fail: block === "full-ci" || block === "full-ci-flake" });
         return { workflow_run_id: 20 };
       }
       if (path.endsWith("/topbot-windows-update.yml/dispatches")) {
@@ -82,20 +90,27 @@ function fixture(block?: "review" | "full-ci" | "legacy" | "publish") {
       return { tag_name: tag, target_commitish: head, immutable: true, prerelease: false,
         assets: [{ name: "topbot-windows-update.json" }, { name: `TopBot-${version}-x64.zip` }] };
     }
-    const dispatchedRun = /^\/actions\/runs\/(2[012])(\/attempts\/1\/jobs)?$/.exec(route);
+    const dispatchedRun = /^\/actions\/runs\/(2[012])(?:\/attempts\/([12])\/jobs)?$/.exec(route);
     if (dispatchedRun) {
       const id = Number(dispatchedRun[1]);
       const run = dispatchRuns.get(id)!;
-      if (dispatchedRun[2]) return { jobs: [{ name: run.job, head_sha: head, run_id: id, status: "completed", conclusion: run.fail ? "failure" : "success" }] };
-      return { id, run_attempt: 1, event: "workflow_dispatch", head_sha: head, head_branch: run.branch,
-        path: `.github/workflows/${run.workflow}.yml`, head_repository: identity, status: "completed", conclusion: run.fail ? "failure" : "success" };
+      const attempt = retried.has(id) ? 2 : 1;
+      const result = run.fail && !(block === "full-ci-flake" && attempt === 2) ? "failure" : "success";
+      if (dispatchedRun[2]) {
+        expect(Number(dispatchedRun[2])).toBe(attempt);
+        return { jobs: [{ name: run.job, head_sha: head, run_id: id, status: "completed", conclusion: result }] };
+      }
+      return { id, run_attempt: attempt, event: "workflow_dispatch", head_sha: head, head_branch: run.branch,
+        path: `.github/workflows/${run.workflow}.yml`, head_repository: identity, status: "completed", conclusion: result };
     }
     if (route.endsWith("/runs")) {
       const wf = route.split("/").at(-2);
       const isReview = wf === "topbot-automatic-review.yml";
-      return { total_count: 1, workflow_runs: [{ id: isReview ? 2 : 1, run_attempt: 1, event: "pull_request", head_sha: head,
+      const failed = isReview ? block === "review" || block === "review-and-ci"
+        : block === "review-and-ci" || (block === "pr-ci-flake" && !retried.has(1));
+      return { total_count: 1, workflow_runs: [{ id: isReview ? 2 : 1, run_attempt: !isReview && retried.has(1) ? 2 : 1, event: "pull_request", head_sha: head,
         head_branch: branch, head_repository: identity, repository: identity, path: `.github/workflows/${wf}`,
-        pull_requests: [{ number: pr, ...side }], status: "completed", conclusion: block === "review" && isReview ? "failure" : "success" }] };
+        pull_requests: [{ number: pr, ...side }], status: "completed", conclusion: failed ? "failure" : "success" }] };
     }
     if (route.endsWith("/jobs")) {
       const id = route.includes("/runs/2/") ? 2 : 1;
@@ -136,8 +151,8 @@ describe("one chat instruction starts an automatic iteration", () => {
     expect(f.writes).toEqual([]);
   });
 
-  it("does not advance main when automated review fails", async () => {
-    const f = fixture("review");
+  it.each(["review", "review-and-ci"] as const)("does not rerun or advance main when automated %s fails", async (block) => {
+    const f = fixture(block);
     await expect(f.run(task)).rejects.toThrow(/did not finish successfully/);
     expect(f.writes).toEqual([]);
   });
@@ -158,14 +173,23 @@ describe("one chat instruction starts an automatic iteration", () => {
     expect(f.writes).toEqual([`${repo}/actions/workflows/ci.yml/dispatches`, `${repo}/actions/workflows/topbot-windows-update.yml/dispatches`]);
   });
 
-  it("does not advance main or dispatch release when full candidate CI fails", async () => {
+  it.each([["pr-ci-flake", 1], ["full-ci-flake", 20]] as const)("automatically reruns only the exact CI workflow for %s", async (block, id) => {
+    const f = fixture(block);
+    let time = 0;
+    await expect(f.run(task, undefined, { now: () => time, sleep: async ms => { time += ms; } })).resolves.toMatchObject({ sha: head });
+    expect(f.writes.filter(p => p.endsWith("/rerun-failed-jobs"))).toEqual([`${repo}/actions/runs/${id}/rerun-failed-jobs`]);
+    expect(f.writes.indexOf(`${repo}/actions/runs/${id}/rerun-failed-jobs`)).toBeLessThan(f.writes.indexOf("/graphql"));
+  });
+
+  it("does not advance main or dispatch release when full candidate CI fails again", async () => {
     const f = fixture("full-ci");
-    await expect(f.run(task)).rejects.toMatchObject({
+    let time = 0;
+    await expect(f.run(task, undefined, { now: () => time, sleep: async ms => { time += ms; } })).rejects.toMatchObject({
       constructor: TopBotReleaseGateError,
       message: "ci did not complete successfully. GitHub Actions run 20 (CI: failure).",
       retryable: false,
     });
-    expect(f.writes).toEqual([`${repo}/actions/workflows/ci.yml/dispatches`]);
+    expect(f.writes).toEqual([`${repo}/actions/workflows/ci.yml/dispatches`, `${repo}/actions/runs/20/rerun-failed-jobs`]);
   });
 
   it("does not report a release after GitHub packaging fails", async () => {

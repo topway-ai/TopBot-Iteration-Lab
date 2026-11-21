@@ -13,12 +13,22 @@ const contexts = new Set(workflows.map(([, name]) => name));
 const automaticRules = new Set(["creation", "deletion", "non_fast_forward", "required_linear_history",
   "required_signatures", "required_status_checks"]);
 const pendingStatuses = new Set(["requested", "queued", "pending", "waiting", "in_progress"]);
+export const retryableCiFailure = run => run.status === "completed" && ["failure", "timed_out", "startup_failure"].includes(run.conclusion);
+export const maxCiAttempts = 2;
 const isId = value => Number.isSafeInteger(value) && value > 0;
 const isSha = value => typeof value === "string" && /^[a-f0-9]{40}$/.test(value) && value !== "0".repeat(40);
 const sameRepo = value => value?.id === repositoryId && value.node_id === repositoryNodeId && value.full_name === repository;
 
 export class AutomaticCheckPending extends Error {
   name = "AutomaticCheckPending";
+}
+
+export class AutomaticCiFailed extends Error {
+  constructor(run) {
+    super(`CI run did not finish successfully. GitHub Actions run ${run.id}, attempt ${run.run_attempt}.`);
+    this.runId = run.id;
+    this.attempt = run.run_attempt;
+  }
 }
 
 function requireState(condition, message) {
@@ -120,6 +130,7 @@ async function verifyWorkflow(read, candidate, workflow, name, mergedWindow) {
   const matches = runs.filter(run => exactlyLinked(run, candidate, workflow, mergedWindow));
   const [run] = matches;
   requireState(matches.length === 1 && isId(run.id) && isId(run.run_attempt), `No unique ${name} run matches the exact PR, workflow path, base and head.`);
+  if (name === "CI" && retryableCiFailure(run)) throw new AutomaticCiFailed(run);
   requireSuccess(run, `${name} run`);
   const jobs = completeList(await read(`${repo}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`), "jobs", `${name} attempt job`);
   const final = jobs.filter(job => job?.name === name);
@@ -139,11 +150,11 @@ export async function verifyAutomaticCandidate(read, candidate, { mergedWindow }
       isSha(base.sha) && head.sha === base.sha, "The candidate changed trusted CI, review or release definitions.");
   }));
   const [ci, review] = await Promise.all(workflows.map(([workflow, name]) => verifyWorkflow(read, input, workflow, name, mergedWindow).catch(error => {
-    if (error instanceof AutomaticCheckPending) return error;
+    if (error instanceof AutomaticCheckPending || error instanceof AutomaticCiFailed) return error;
     throw error;
   })));
-  if (ci instanceof AutomaticCheckPending) throw ci;
   if (review instanceof AutomaticCheckPending) throw review;
+  if (ci instanceof AutomaticCheckPending || ci instanceof AutomaticCiFailed) throw ci;
   return { ...input, ciRun: ci.run, ciAttempt: ci.attempt, ciJob: ci.job,
     reviewRun: review.run, reviewAttempt: review.attempt, reviewJob: review.job };
 }

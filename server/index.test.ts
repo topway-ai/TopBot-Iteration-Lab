@@ -3852,17 +3852,14 @@ describe("harness HTTP API", () => {
       expect(siblingMessages.some((message) => (message.tool?.name ?? "").startsWith("Waiting for its turn on this computer"))).toBe(true);
       const parkedChip = siblingMessages.find((message) => (message.tool?.name ?? "").startsWith("Computer still busy after "));
       expect(parkedChip?.tool?.ok).toBe(true);
-      const waitEvents = ((await isolatedApi("GET", `/api/threads/${sibling.threadId}/events`)).body.entries as Array<{ kind: string; data: any }>)
-        .filter((entry) => entry.kind === "runtime").map((entry) => entry.data);
-      expect(waitEvents.find((event) => event.type === "turn.wait_started")).toMatchObject({
-        holder: { name: "Park holder" },
-        resource: expect.stringMatching(/^computer:/),
+      await expect.poll(async () => {
+        const entries = (await isolatedApi("GET", `/api/threads/${sibling.threadId}/events`)).body.entries as Array<{ kind: string; data: any }>;
+        const events = entries.filter((entry) => entry.kind === "runtime").map((entry) => entry.data);
+        return { started: events.find((event) => event.type === "turn.wait_started"), ended: events.find((event) => event.type === "turn.wait_ended") };
+      }, { timeout: 5_000 }).toMatchObject({
+        started: { holder: { name: "Park holder" }, resource: expect.stringMatching(/^computer:/) },
+        ended: { holder: { name: "Park holder" }, outcome: "parked", waitedMs: expect.toSatisfy((ms: unknown) => typeof ms === "number" && ms >= 0) },
       });
-      expect(waitEvents.find((event) => event.type === "turn.wait_ended")).toMatchObject({
-        holder: { name: "Park holder" },
-        outcome: "parked",
-      });
-      expect(waitEvents.find((event) => event.type === "turn.wait_ended").waitedMs).toBeGreaterThanOrEqual(0);
       await expect.poll(async () => {
         const task = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
           .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === sibling.threadId);

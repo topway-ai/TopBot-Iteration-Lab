@@ -1,4 +1,4 @@
-import { AutomaticCheckPending, requireAutomaticMain, verifyAutomaticCandidate } from "./topbot-auto-github.mjs";
+import { AutomaticCheckPending, maxCiAttempts, requireAutomaticMain, verifyAutomaticCandidate } from "./topbot-auto-github.mjs";
 
 const repository = "topway-ai/TopBot-Iteration-Lab";
 const repositoryId = "R_kgDOV1Ci8g";
@@ -63,7 +63,8 @@ export async function verifyWindowsReleaseGate(read, sha, expectedPR, expectedRu
   if (!run || (run.head_sha === sha && run.status !== "completed")) {
     throw new TopBotReleaseGateError("完整 CI 尚在进行。", { retryable: true });
   }
-  requireGate(isId(run?.id) && (expectedRunId === undefined || run.id === expectedRunId) && run.run_attempt === 1 &&
+  requireGate(isId(run?.id) && (expectedRunId === undefined || run.id === expectedRunId) &&
+    isId(run.run_attempt) && run.run_attempt <= maxCiAttempts &&
     run.event === "workflow_dispatch" && run.head_sha === sha && run.head_branch === pr.head.ref &&
     sameRepo(run.head_repository) && run.path?.split("@", 1)[0] === ".github/workflows/ci.yml" &&
     run.status === "completed" && run.conclusion === "success", "确切 main 提交的完整 CI 尚未通过。");
