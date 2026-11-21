@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { browserBundlePaths, browserBundleSpec } from "../server/browser-bundle-release.ts";
 import { executableTarget } from "./prepare-cloudflared.mjs";
@@ -103,7 +104,39 @@ export function verifyBrowserBundle(directory, target) {
   return manifest;
 }
 
-export async function releaseBytes(asset, cacheDirectory) {
+const retryDelays = [500, 1500];
+const retryStatuses = new Set([408, 429, 500, 502, 503, 504]);
+const retryCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
+class RetryableDownloadError extends Error {}
+
+async function downloadBrowserAsset(asset, wait) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(asset.url, { signal: AbortSignal.timeout(180_000), redirect: "follow" });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        const ErrorType = retryStatuses.has(response.status) ? RetryableDownloadError : Error;
+        throw new ErrorType(`Could not download ${asset.asset}: HTTP ${response.status}`);
+      }
+      const parts = [];
+      let size = 0;
+      for await (const part of response.body) {
+        size += part.length;
+        if (size > asset.bytes) throw new Error(`${asset.asset} exceeded its pinned size`);
+        parts.push(part);
+      }
+      return Buffer.concat(parts, size);
+    } catch (error) {
+      const transient = error instanceof RetryableDownloadError || error?.name === "TimeoutError" ||
+        retryCodes.has(error?.code) || retryCodes.has(error?.cause?.code);
+      if (!transient) throw error;
+      if (attempt >= retryDelays.length) throw new Error(`Could not download ${asset.asset} after ${attempt + 1} attempts`, { cause: error });
+      await wait(retryDelays[attempt]);
+    }
+  }
+}
+
+export async function releaseBytes(asset, cacheDirectory, { wait = delay } = {}) {
   const cached = cacheDirectory && join(cacheDirectory, asset.asset);
   if (cached && existsSync(cached)) {
     try {
@@ -115,16 +148,7 @@ export async function releaseBytes(asset, cacheDirectory) {
       rmSync(cached, { force: true });
     }
   }
-  const response = await fetch(asset.url, { signal: AbortSignal.timeout(600_000), redirect: "follow" });
-  if (!response.ok) throw new Error(`Could not download ${asset.asset}: HTTP ${response.status}`);
-  const parts = [];
-  let size = 0;
-  for await (const part of response.body) {
-    size += part.length;
-    if (size > asset.bytes) throw new Error(`${asset.asset} exceeded its pinned size`);
-    parts.push(part);
-  }
-  const bytes = Buffer.concat(parts);
+  const bytes = await downloadBrowserAsset(asset, wait);
   verifyAssetBytes(bytes, asset);
   if (cached) {
     mkdirSync(cacheDirectory, { recursive: true });

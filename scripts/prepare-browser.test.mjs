@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { browserBundlePaths, browserBundleSpec, CHROME_VERSION, SUPPORTED_BROWSER_TARGETS } from "../server/browser-bundle-release.ts";
@@ -83,7 +83,42 @@ describe("pinned desktop browser preparation", () => {
     writeFileSync(join(root, asset.asset), Buffer.alloc(bytes.length));
     fetch.mockResolvedValueOnce(new Response(Buffer.alloc(bytes.length)));
     await expect(releaseBytes(asset, root)).rejects.toThrow(/SHA-256/);
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(() => verifyAssetBytes(bytes.subarray(1), asset)).toThrow(/size/);
+  });
+
+  it("retries a reset during a pinned download and caches only the complete verified retry", async () => {
+    const root = fixture(), bytes = Buffer.from("reviewed fixture");
+    const asset = { asset: "fixture.zip", url: "https://invalid.example/fixture", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+    const cache = join(root, asset.asset);
+    const reason = new TypeError("terminated", { cause: Object.assign(new Error("reset"), { code: "ECONNRESET" }) });
+    let sent = false;
+    const partial = new ReadableStream({ pull(controller) {
+      if (sent) controller.error(reason);
+      else { sent = true; controller.enqueue(bytes.subarray(0, 2)); }
+    } });
+    const wait = vi.fn(async () => { expect(existsSync(cache)).toBe(false); });
+    const request = vi.fn().mockResolvedValueOnce(new Response(partial)).mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(bytes));
+    vi.stubGlobal("fetch", request);
+    await expect(releaseBytes(asset, root, { wait })).resolves.toEqual(bytes);
+    expect(wait.mock.calls).toEqual([[500], [1500]]);
+    expect(request.mock.calls).toHaveLength(3);
+    expect(readFileSync(cache)).toEqual(bytes);
+  });
+
+  it("stops after a bounded number of network failures, and does not retry HTTP 404", async () => {
+    const root = fixture();
+    const asset = { asset: "fixture.zip", url: "https://invalid.example/fixture", bytes: 1, sha256: "0".repeat(64) };
+    const wait = vi.fn(async () => {});
+    const request = vi.fn(async () => new Response(null, { status: 502 }));
+    vi.stubGlobal("fetch", request);
+    await expect(releaseBytes(asset, root, { wait })).rejects.toThrow("after 3 attempts");
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(existsSync(join(root, asset.asset))).toBe(false);
+    request.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    await expect(releaseBytes(asset, root, { wait })).rejects.toThrow("HTTP 404");
+    expect(request).toHaveBeenCalledTimes(4);
   });
 
   it("detects modified, missing and unexpected resource files", () => {
