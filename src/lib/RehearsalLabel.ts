@@ -1,1 +1,1 @@
-export const rehearsalLabel = "Pending";
+export const rehearsalLabel = "Ready";
