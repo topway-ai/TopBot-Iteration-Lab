@@ -2582,15 +2582,24 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
   it("starts at most the host's launch slots at once and runs the rest as slots free", async () => {
     await create();
     const log = join(scratch, "startups.ndjson");
+    const gate = join(scratch, "release-startup");
     vi.stubEnv("OMB_CODEX_LAUNCH_SLOTS", "2");
-    vi.stubEnv("FAKE_CODEX_STARTUP_DELAY_MS", "150");
+    vi.stubEnv("FAKE_CODEX_STARTUP_GATE", gate);
     vi.stubEnv("FAKE_CODEX_STARTUP_LOG", log);
     const threads = Array.from({ length: 10 }, (_, index) => `t-slot-${index}`);
-    const turns = await Promise.all(threads.map((threadId) => instance.adapter.sendTurn({ threadId, text: "hi" })));
+    const turnsPending = Promise.all(threads.map((threadId) => instance.adapter.sendTurn({ threadId, text: "hi" })));
+    void turnsPending.catch(() => {});
+    const queued = () => recorder.events.filter((e) => e.type === "runtime.notice" && e.message.startsWith("Waiting for a free Codex slot")).length;
+    try {
+      await expect.poll(queued, { timeout: 10_000 }).toBe(8);
+    } finally {
+      writeFileSync(gate, "");
+    }
+    const turns = await turnsPending;
     await expect.poll(() => recorder.events.filter((e) => e.type === "turn.completed").length, { timeout: 30_000 }).toBe(10);
     for (const { turnId } of turns) expect(recorder.events.find((e) => e.type === "turn.completed" && e.turnId === turnId)).toMatchObject({ ok: true });
     expect(recorder.events.filter((e) => e.type === "turn.started")).toHaveLength(10);
-    expect(recorder.events.filter((e) => e.type === "runtime.notice" && e.message.startsWith("Waiting for a free Codex slot")).length).toBeGreaterThanOrEqual(8);
+    expect(queued()).toBe(8);
     const entries = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { pid: number; at: number; event: string });
     const spans = [...new Set(entries.map((entry) => entry.pid))].flatMap((pid) => {
       const start = entries.find((entry) => entry.pid === pid && entry.event === "initialize");
